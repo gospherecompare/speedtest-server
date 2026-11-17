@@ -52,6 +52,7 @@ async function lookupNetworkMetadata(ip) {
     region: result.region || "",
     country: result.country || "",
     network: connection.org || connection.isp || "Unknown network",
+    asnName: connection.org || connection.isp || "Unknown network",
     isp: connection.isp || "Unknown ISP",
     asn:
       connection.asn === undefined || connection.asn === null
