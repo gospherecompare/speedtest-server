@@ -28,7 +28,7 @@ app.use("/api", (request, response, next) => {
   next();
 });
 
-async function lookupNetworkMetadata(ip) {
+async function lookupWithIpWho(ip) {
   const url = new URL(`https://ipwho.is/${encodeURIComponent(ip)}`);
   url.searchParams.set(
     "fields",
@@ -58,7 +58,62 @@ async function lookupNetworkMetadata(ip) {
       connection.asn === undefined || connection.asn === null
         ? "Unavailable"
         : `AS${connection.asn}`,
+    provider: "ipwho.is",
   };
+}
+
+async function lookupWithFreeIpApi(ip) {
+  const url = new URL(
+    `https://free.freeipapi.com/api/json/${encodeURIComponent(ip)}`,
+  );
+  const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!response.ok) {
+    throw new Error(`IP metadata provider returned HTTP ${response.status}.`);
+  }
+
+  const result = await response.json();
+  if (typeof result.ipAddress !== "string") {
+    throw new Error("IP metadata provider returned an invalid response.");
+  }
+
+  const asnName = result.asnOrganization || "Unknown network";
+  const asnValue = result.asn === undefined || result.asn === null
+    ? ""
+    : String(result.asn).replace(/^AS/i, "");
+
+  return {
+    ip: result.ipAddress,
+    city: result.cityName || "",
+    region: result.regionName || "",
+    country: result.countryName || "",
+    network: asnName,
+    asnName,
+    isp: asnName,
+    asn: /^\d+$/.test(asnValue) ? `AS${asnValue}` : "Unavailable",
+    provider: "freeipapi.com",
+  };
+}
+
+async function lookupNetworkMetadata(ip) {
+  const failures = [];
+
+  try {
+    return await lookupWithIpWho(ip);
+  } catch (error) {
+    failures.push(
+      `ipwho.is: ${error instanceof Error ? error.message : "lookup failed"}`,
+    );
+  }
+
+  try {
+    return await lookupWithFreeIpApi(ip);
+  } catch (error) {
+    failures.push(
+      `freeipapi.com: ${error instanceof Error ? error.message : "lookup failed"}`,
+    );
+  }
+
+  throw new Error(failures.join("; "));
 }
 
 app.get("/api/network-info", async (request, response) => {
@@ -71,12 +126,9 @@ app.get("/api/network-info", async (request, response) => {
 
   try {
     const client = await lookupNetworkMetadata(clientIp);
-    response.json({ client, provider: "ipwho.is" });
+    response.json({ client, provider: client.provider });
   } catch (error) {
-    console.error(
-      "Network metadata lookup failed:",
-      error instanceof Error ? error.name : "Unknown error",
-    );
+    console.error("Network metadata lookup failed:", error);
     response
       .status(502)
       .json({ error: "Network information is temporarily unavailable." });
