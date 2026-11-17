@@ -1,5 +1,4 @@
 import express from "express";
-import { lookup as dnsLookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,11 +10,6 @@ const clientDirectory = path.resolve(serverDirectory, "..", "frontend", "dist");
 const downloadChunk = Buffer.alloc(64 * 1024, 0x61);
 const maximumUploadBytes = 5 * 1024 * 1024;
 const maximumDownloadDurationMs = 12_000;
-const testServerHostname =
-  process.env.RENDER_EXTERNAL_HOSTNAME || "speedtest-server-2rjp.onrender.com";
-const serverMetadataCacheDurationMs = 5 * 60 * 1000;
-let cachedServerMetadata;
-let cachedServerMetadataExpiresAt = 0;
 
 app.disable("x-powered-by");
 app.set("trust proxy", true);
@@ -36,7 +30,10 @@ app.use("/api", (request, response, next) => {
 
 async function lookupNetworkMetadata(ip) {
   const url = new URL(`https://ipwho.is/${encodeURIComponent(ip)}`);
-  url.searchParams.set("fields", "success,message,ip,connection");
+  url.searchParams.set(
+    "fields",
+    "success,message,ip,city,region,country,connection",
+  );
 
   const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
   if (!response.ok) {
@@ -51,30 +48,16 @@ async function lookupNetworkMetadata(ip) {
   const connection = result.connection ?? {};
   return {
     ip: result.ip,
+    city: result.city || "",
+    region: result.region || "",
+    country: result.country || "",
     network: connection.org || connection.isp || "Unknown network",
     isp: connection.isp || "Unknown ISP",
     asn:
       connection.asn === undefined || connection.asn === null
-        ? "Unknown"
+        ? "Unavailable"
         : `AS${connection.asn}`,
   };
-}
-
-async function getTestServerMetadata() {
-  if (cachedServerMetadata && cachedServerMetadataExpiresAt > Date.now()) {
-    return cachedServerMetadata;
-  }
-
-  const addresses = await dnsLookup(testServerHostname, { all: true });
-  const address = addresses.find((record) => record.family === 4) ?? addresses[0];
-  if (!address) {
-    throw new Error("Could not resolve the test server hostname.");
-  }
-
-  const metadata = await lookupNetworkMetadata(address.address);
-  cachedServerMetadata = { hostname: testServerHostname, ...metadata };
-  cachedServerMetadataExpiresAt = Date.now() + serverMetadataCacheDurationMs;
-  return cachedServerMetadata;
 }
 
 app.get("/api/network-info", async (request, response) => {
@@ -86,11 +69,8 @@ app.get("/api/network-info", async (request, response) => {
   }
 
   try {
-    const [client, server] = await Promise.all([
-      lookupNetworkMetadata(clientIp),
-      getTestServerMetadata(),
-    ]);
-    response.json({ client, server, provider: "ipwho.is" });
+    const client = await lookupNetworkMetadata(clientIp);
+    response.json({ client, provider: "ipwho.is" });
   } catch (error) {
     console.error(
       "Network metadata lookup failed:",
